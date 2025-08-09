@@ -1,4 +1,3 @@
-# comment instructions only
 import json
 import time
 from pathlib import Path
@@ -343,7 +342,7 @@ def predict_on_images(args, paths: List[str], save_dir: str):
             det_list.append((x1o, y1o, x2o, y2o, conf, cls_int))
 
         # draw on original resolution
-        img_draw = draw_detections(img_rgb.copy(), det_list, names)
+        img_draw = draw_detections(img_rgb.copy(), det_list, names, thickness=max(1, int(imgsz/640)))
 
         if save_outputs:
             out_path = str(Path(save_dir) / (Path(p).stem + '_pred.jpg'))
@@ -413,7 +412,7 @@ def predict_on_video(args, source: str | int, save_dir: str):
             for x1, y1, x2, y2, conf, cls in det_np.tolist():
                 x1o = x1 * scale_x; y1o = y1 * scale_y; x2o = x2 * scale_x; y2o = y2 * scale_y
                 det_list.append((x1o, y1o, x2o, y2o, float(conf), int(cls)))
-            annotated = draw_detections(frame_rgb.copy(), det_list, names)
+            annotated = draw_detections(frame_rgb.copy(), det_list, names, thickness=max(1, int(imgsz/640)))
             annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
             if writer is not None:
                 writer.write(annotated_bgr)

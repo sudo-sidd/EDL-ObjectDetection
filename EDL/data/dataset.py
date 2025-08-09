@@ -1,4 +1,3 @@
-# comment instructions only
 import os
 from pathlib import Path
 from typing import List, Optional

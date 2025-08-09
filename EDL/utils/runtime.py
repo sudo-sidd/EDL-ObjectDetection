@@ -1,4 +1,3 @@
-# comment instructions only
 import os
 import random
 import datetime

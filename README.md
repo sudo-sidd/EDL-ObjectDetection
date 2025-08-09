@@ -11,6 +11,8 @@ A modular, from-scratch object detection framework inspired by YOLO. Includes a 
 - Standard YOLO dataset format (images + labels with TXT) and YAML config
 - Prediction returns in-memory results; saving is opt-in with `--save_results`
 - Progress bars and configuration banner during training
+- Concise per-image/per-frame prediction logs and auto device selection (`--device auto`)
+- Boxes are scaled back to original resolution, clamped to image bounds; drawing thickness scales with resolution
 
 ## Requirements
 
@@ -37,7 +39,7 @@ Custom-ObjectDetection-Model/
 │   ├── data/
 │   │   └── dataset.py          # YOLO TXT dataset loader, YAML path resolution
 │   └── utils/                  # Helpers: NMS, drawing, geometry, runtime, etc.
-│       ├── vis.py              # draw_detections
+│       ├── vis.py              # draw_detections (clamped boxes, thickness scaling)
 │       ├── nms.py              # NMS implementation
 │       ├── geometry.py         # xywh/xyxy conversions
 │       ├── runtime.py          # device parsing, seeding, dirs
@@ -153,7 +155,7 @@ results = predict_on_images(args, ['test.jpg'], save_dir='')
 # Each result:
 # {
 #   'path': 'test.jpg',
-#   'image': <H x W x 3 RGB numpy array at imgsz>,
+#   'image': <H x W x 3 RGB numpy array at original resolution>,
 #   'boxes': {
 #       'apple1': {'bbox': [x1,y1,x2,y2], 'conf': 0.87, 'cls': 'apple'},
 #       'apple2': {...},
@@ -165,7 +167,7 @@ boxes = results[0]['boxes']
 
 Notes:
 
-- Returned coordinates are in the resized inference space (`imgsz x imgsz`). If you need original image coordinates, scale accordingly.
+- Returned coordinates and annotated image are at the original image resolution. Boxes are clamped to image bounds; drawing thickness scales with resolution.
 
 ## Internals Overview
 
@@ -173,7 +175,7 @@ Notes:
 - Target Assignment (`assign_targets` in `engine.py`): One object per best (area) cell.
 - Loss (`compute_loss` in `engine.py`): BCE for objectness, BCE for per-class, (1 - IoU) for boxes.
 - Decoding (`decode_predictions` in `engine.py`): Sigmoid offsets + grid to get normalized xywh; converts to xyxy pixels; multiplies obj × class scores; filters by `conf`; applies NMS; returns `[x1,y1,x2,y2,conf,cls]` per image.
-- Visualization (`EDL/utils/vis.py`): `draw_detections(image_rgb, det_list, names)` draws boxes and `class:conf` labels.
+- Visualization (`EDL/utils/vis.py`): `draw_detections(image_rgb, det_list, names)` draws boxes and `class:conf` labels with clamping and thickness scaling.
 
 ## CLI Reference
 

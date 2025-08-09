@@ -1,4 +1,3 @@
-# comment instructions only
 import torch
 
 def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_thres: float) -> torch.Tensor:

@@ -1,5 +1,4 @@
-# comment instructions only
-import torch
+ import torch
 import torch.nn as nn
 
 class ConvBNAct(nn.Module):
