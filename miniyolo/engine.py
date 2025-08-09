@@ -1,0 +1,274 @@
+# comment instructions only
+import json
+import time
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+from .model import MiniYOLO
+from .data import YOLOTxtDataset, collate_fn
+from .utils import xywhn_to_xyxy_pixels, iou_xywh, nms, draw_detections
+
+# assign targets
+
+def assign_targets(labels_list: List[torch.Tensor], S: int, num_classes: int):
+    B = len(labels_list)
+    obj_t = torch.zeros((B, 1, S, S), dtype=torch.float32)
+    cls_t = torch.zeros((B, num_classes, S, S), dtype=torch.float32)
+    box_t = torch.zeros((B, 4, S, S), dtype=torch.float32)
+    mask = torch.zeros((B, 1, S, S), dtype=torch.bool)
+    for b, labels in enumerate(labels_list):
+        if labels.numel() == 0:
+            continue
+        cell_best = {}
+        for k in range(labels.shape[0]):
+            c, cx, cy, w, h = labels[k].tolist()
+            i = min(max(int(cx * S), 0), S - 1)
+            j = min(max(int(cy * S), 0), S - 1)
+            area = w * h
+            key = (j, i)
+            if key not in cell_best or area > cell_best[key][0]:
+                cell_best[key] = (area, k)
+        for (j, i), (_, k) in cell_best.items():
+            c, cx, cy, w, h = labels[k].tolist()
+            obj_t[b, 0, j, i] = 1.0
+            ci = int(c)
+            if 0 <= ci < num_classes:
+                cls_t[b, ci, j, i] = 1.0
+            box_t[b, :, j, i] = torch.tensor([cx, cy, w, h], dtype=torch.float32)
+            mask[b, 0, j, i] = True
+    return obj_t, cls_t, box_t, mask
+
+# loss
+
+def compute_loss(pred: torch.Tensor, obj_t: torch.Tensor, cls_t: torch.Tensor, box_t: torch.Tensor, mask: torch.Tensor, num_classes: int):
+    B, C, S, _ = pred.shape
+    obj_logits = pred[:, 0:1]
+    cls_logits = pred[:, 1:1+num_classes]
+    box_logits = pred[:, 1+num_classes:1+num_classes+4]
+
+    obj_loss = F.binary_cross_entropy_with_logits(obj_logits, obj_t, reduction='mean')
+
+    pos = mask.expand_as(cls_logits)
+    if pos.any():
+        cls_loss = F.binary_cross_entropy_with_logits(cls_logits[pos], cls_t[pos], reduction='mean')
+    else:
+        cls_loss = torch.tensor(0.0, device=pred.device)
+
+    gy, gx = torch.meshgrid(torch.arange(S, device=pred.device), torch.arange(S, device=pred.device), indexing='ij')
+    gx = gx.view(1, 1, S, S).float()
+    gy = gy.view(1, 1, S, S).float()
+
+    dx = torch.sigmoid(box_logits[:, 0:1])
+    dy = torch.sigmoid(box_logits[:, 1:2])
+    pw = torch.sigmoid(box_logits[:, 2:3])
+    ph = torch.sigmoid(box_logits[:, 3:4])
+
+    cx_pred = (gx + dx) / S
+    cy_pred = (gy + dy) / S
+    w_pred = pw
+    h_pred = ph
+
+    pred_box = torch.cat([cx_pred, cy_pred, w_pred, h_pred], dim=1)
+
+    if mask.any():
+        pb = pred_box.permute(0, 2, 3, 1)[mask.squeeze(1)]
+        tb = box_t.permute(0, 2, 3, 1)[mask.squeeze(1)]
+        iou = iou_xywh(pb, tb)
+        box_loss = (1.0 - iou).mean()
+    else:
+        box_loss = torch.tensor(0.0, device=pred.device)
+
+    total = obj_loss + cls_loss + box_loss
+    logs = {
+        'loss': float(total.detach().item()),
+        'obj_loss': float(obj_loss.detach().item()),
+        'cls_loss': float(cls_loss.detach().item()),
+        'box_loss': float(box_loss.detach().item()),
+    }
+    return total, logs
+
+# decode
+
+def decode_predictions(pred: torch.Tensor, num_classes: int, conf_thres: float, iou_thres: float, img_size: int, max_det: int = 300):
+    B, C, S, _ = pred.shape
+    obj = torch.sigmoid(pred[:, 0:1])
+    cls = torch.sigmoid(pred[:, 1:1+num_classes])
+    box = pred[:, 1+num_classes:1+num_classes+4]
+
+    gy, gx = torch.meshgrid(torch.arange(S, device=pred.device), torch.arange(S, device=pred.device), indexing='ij')
+    gx = gx.view(1, 1, S, S).float()
+    gy = gy.view(1, 1, S, S).float()
+
+    dx = torch.sigmoid(box[:, 0:1])
+    dy = torch.sigmoid(box[:, 1:2])
+    pw = torch.sigmoid(box[:, 2:3])
+    ph = torch.sigmoid(box[:, 3:4])
+
+    cx = (gx + dx) / S
+    cy = (gy + dy) / S
+    w = pw
+    h = ph
+
+    xywhn = torch.cat([cx, cy, w, h], dim=1)
+    xyxyp = xywhn_to_xyxy_pixels(xywhn.permute(0, 2, 3, 1).reshape(B, S*S, 4), img_size)
+
+    obj_flat = obj.view(B, 1, S*S)
+    cls_flat = cls.view(B, num_classes, S*S)
+
+    out = []
+    for b in range(B):
+        scores = (obj_flat[b] * cls_flat[b]).squeeze(0)
+        scores_max, labels = scores.max(dim=0)
+        m = scores_max > conf_thres
+        if m.sum() == 0:
+            out.append(torch.zeros((0, 6), device=pred.device))
+            continue
+        boxes_b = xyxyp[b][m]
+        scores_b = scores_max[m]
+        labels_b = labels[m]
+        keep = nms(boxes_b, scores_b, iou_thres)
+        if keep.numel() > max_det:
+            keep = keep[:max_det]
+        det = torch.cat([boxes_b[keep], scores_b[keep].unsqueeze(1), labels_b[keep].unsqueeze(1).float()], dim=1)
+        out.append(det)
+    return out
+
+# train loop
+
+def train_loop(args):
+    from .utils import seed_everything, parse_device, now_str, make_dir
+    seed_everything(args.seed)
+    device = parse_device(args.device)
+
+    ds = YOLOTxtDataset(args.data, split='train', img_size=args.imgsz)
+    names = ds.names
+    nc = ds.num_classes if args.num_classes is None else args.num_classes
+    if nc != len(names) and len(names) > 0:
+        print(f"[warn] nc({nc}) != len(names)({len(names)}), using nc={nc}")
+    dl = DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=args.workers, pin_memory=True, collate_fn=collate_fn)
+
+    model = MiniYOLO(num_classes=nc).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=5e-4)
+
+    out_dir = args.out or f"runs/train/exp-{now_str()}"
+    weights_dir = str(Path(out_dir) / 'weights')
+    make_dir(weights_dir)
+    make_dir('runs/train')
+
+    meta = {
+        'imgsz': args.imgsz,
+        'stride': 16,
+        'names': names,
+        'num_classes': nc,
+    }
+    with open(Path(out_dir) / 'meta.json', 'w') as f:
+        json.dump(meta, f, indent=2)
+
+    model.train()
+    global_step = 0
+    best_loss = float('inf')
+
+    for epoch in range(args.epochs):
+        epoch_loss = 0.0
+        t0 = time.time()
+        for batch in dl:
+            imgs = batch['images'].to(device)
+            labels = [l.to(device) for l in batch['labels']]
+            B, _, H, W = imgs.shape
+            assert H == W and H % 16 == 0
+            S = H // 16
+
+            pred = model(imgs)
+            obj_t, cls_t, box_t, mask = assign_targets(labels, S, nc)
+            obj_t = obj_t.to(device)
+            cls_t = cls_t.to(device)
+            box_t = box_t.to(device)
+            mask = mask.to(device)
+
+            loss, logs = compute_loss(pred, obj_t, cls_t, box_t, mask, nc)
+
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+            opt.step()
+
+            epoch_loss += logs['loss']
+            global_step += 1
+
+            if global_step % args.log_interval == 0:
+                print(f"epoch {epoch+1}/{args.epochs} step {global_step} loss {logs['loss']:.4f} obj {logs['obj_loss']:.4f} cls {logs['cls_loss']:.4f} box {logs['box_loss']:.4f}")
+
+        dt = time.time() - t0
+        avg_loss = epoch_loss / max(1, len(dl))
+        print(f"[epoch {epoch+1}] avg_loss {avg_loss:.4f} time {dt:.1f}s")
+
+        last_w = Path(weights_dir) / 'last.pt'
+        torch.save({'model': model.state_dict(), 'meta': meta}, last_w)
+        try:
+            import shutil
+            shutil.copyfile(last_w, Path('runs/train/last.pt'))
+        except Exception:
+            pass
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_w = Path(weights_dir) / 'best.pt'
+            torch.save({'model': model.state_dict(), 'meta': meta}, best_w)
+            try:
+                import shutil
+                shutil.copyfile(best_w, Path('runs/train/best.pt'))
+            except Exception:
+                pass
+
+    print(f"[done] weights saved to {weights_dir}")
+
+# predict utils
+
+def predict_on_images(args, paths: List[str], save_dir: str):
+    from .utils import parse_device, make_dir, draw_detections
+    import cv2
+    import numpy as np
+
+    device = parse_device(args.device)
+    model, meta = load_model(args.weights, device, args.num_classes)
+    names = meta.get('names', [])
+    imgsz = meta.get('imgsz', args.imgsz)
+
+    make_dir(save_dir)
+    for p in paths:
+        img0 = cv2.imread(p)
+        if img0 is None:
+            print(f"[warn] skip unreadable {p}")
+            continue
+        img_rgb = cv2.cvtColor(img0, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img_rgb, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
+        img_t = torch.from_numpy(np.transpose(img.astype(np.float32) / 255.0, (2, 0, 1))).unsqueeze(0).to(device)
+        with torch.no_grad():
+            pred = model(img_t)
+            dets = decode_predictions(pred, model.num_classes, args.conf, args.iou, imgsz, max_det=args.max_det)[0]
+        det_list = []
+        for x1, y1, x2, y2, conf, cls in dets.detach().cpu().numpy().tolist():
+            det_list.append((x1, y1, x2, y2, conf, int(cls)))
+        img_draw = img.copy()
+        img_draw = draw_detections(img_draw, det_list, names)
+        out_path = str(Path(save_dir) / (Path(p).stem + '_pred.jpg'))
+        cv2.imwrite(out_path, cv2.cvtColor(img_draw, cv2.COLOR_RGB2BGR))
+        print(f"saved {out_path}")
+
+# load weights
+
+def load_model(weights: str, device: torch.device, num_classes: Optional[int] = None):
+    model, meta = None, {}
+    ckpt = torch.load(weights, map_location=device)
+    meta = ckpt.get('meta', {})
+    nc_meta = meta.get('num_classes', None)
+    imgsz = meta.get('imgsz', 640)
+    nc = num_classes if num_classes is not None else (nc_meta if nc_meta is not None else 1)
+    model = MiniYOLO(num_classes=nc).to(device)
+    model.load_state_dict(ckpt['model'], strict=False)
+    model.eval()
+    return model, meta
