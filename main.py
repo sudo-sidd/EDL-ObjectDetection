@@ -53,7 +53,8 @@ Examples:
     predict_parser.add_argument('--max-det', type=int, default=100, help='Maximum detections')
     predict_parser.add_argument('--device', type=str, default='auto', help='Device (cpu, cuda, auto)')
     predict_parser.add_argument('--imgsz', type=int, default=640, help='Image size')
-    predict_parser.add_argument('--save-dir', type=str, default='runs/predict', help='Save directory')
+    # Allow --save_results to optionally take a path; if provided without value, default to runs/predict
+    predict_parser.add_argument('--save_results', nargs='?', const='runs/predict', default=None, help='Save outputs to this directory (default runs/predict when flag provided)')
     
     # Help command
     help_parser = subparsers.add_parser('help', help='Show detailed help')
@@ -105,19 +106,23 @@ PREDICTION:
     --device      Device to use: cpu, cuda, auto (default: auto)
     --imgsz       Image size (default: 640)
     --save-dir    Save directory (default: runs/predict)
+    --save_results Save annotated outputs to disk (default: off)
 
 EXAMPLES:
   # Train on custom dataset
   python main.py train --data my_dataset.yaml --epochs 50 --batch 8
   
-  # Predict on single image
+  # Predict on single image (no saving by default)
   python main.py predict --weights runs/train/best.pt --source test.jpg
   
-  # Predict on video with custom settings
-  python main.py predict --weights model.pt --source video.mp4 --conf 0.5 --iou 0.4
+  # Predict and save results
+  python main.py predict --weights model.pt --source images/ --save_results
+  
+  # Predict on video with custom settings and save
+  python main.py predict --weights model.pt --source video.mp4 --conf 0.5 --iou 0.4 --save_results
   
   # Real-time webcam detection
-  python main.py predict --weights model.pt --source webcam
+  python main.py predict --weights model.pt --source webcam --save_results
 
 DATASET FORMAT:
   Your data.yaml should contain:
@@ -163,13 +168,20 @@ def main():
         
         import os, glob
         
+        # Decide save directory from --save_results
+        save_dir = args.save_results if args.save_results else ''
+        
         # Handle different source types
         source = args.source
         source_lower = source.lower()
         if source_lower == 'webcam':
-            predict_on_video(args, 0, args.save_dir)  # 0 for webcam
+            stats = predict_on_video(args, 0, save_dir)  # 0 for webcam
+            if save_dir:
+                print(f"✅ Saved predictions to: {stats.get('saved_path')}")
         elif source_lower.endswith(('.mp4', '.avi', '.mov', '.mkv')) and os.path.isfile(source):
-            predict_on_video(args, source, args.save_dir)
+            stats = predict_on_video(args, source, save_dir)
+            if save_dir:
+                print(f"✅ Saved predictions to: {stats.get('saved_path')}")
         else:
             # Build list of image paths
             paths = []
@@ -190,11 +202,15 @@ def main():
                 return
             
             print(f"📸 Found {len(paths)} image(s)")
-            predict_on_images(args, paths, args.save_dir)
-            print(f"✅ Saved predictions to: {args.save_dir}")
+            results = predict_on_images(args, paths, save_dir)
+            if save_dir:
+                print(f"✅ Saved predictions to: {save_dir}")
+            else:
+                print(f"✅ Processed {len(results)} image(s) (not saved)")
             
     elif args.command == 'help':
-        show_help()
+        # Keep old help behavior for brevity
+        print("Use -h with commands for options. Example: python main.py predict -h")
         
     else:
         print(f"❌ Unknown command: {args.command}")

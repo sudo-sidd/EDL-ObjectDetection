@@ -290,7 +290,12 @@ def predict_on_images(args, paths: List[str], save_dir: str):
     names = meta.get('names', [])
     imgsz = meta.get('imgsz', args.imgsz)
 
-    make_dir(save_dir)
+    save_outputs = bool(save_dir)
+    if save_outputs:
+        make_dir(save_dir)
+
+    results = []  # collect (path, annotated_image, boxes_dict)
+
     for p in paths:
         img0 = cv2.imread(p)
         if img0 is None:
@@ -310,15 +315,101 @@ def predict_on_images(args, paths: List[str], save_dir: str):
                 max_det=args.max_det,
             )[0]
 
+        # Build boxes dict with ids like apple1, apple2, ...
+        det_np = dets.detach().cpu().numpy()
+        # sort by confidence desc for stable numbering
+        if det_np.size:
+            det_np = det_np[(-det_np[:, 4]).argsort()]
+        counts: Dict[str, int] = {}
+        boxes_dict: Dict[str, Dict[str, object]] = {}
         det_list = []
-        for x1, y1, x2, y2, conf, cls in dets.detach().cpu().numpy().tolist():
-            det_list.append((x1, y1, x2, y2, conf, int(cls)))
-        img_draw = img.copy()
-        img_draw = draw_detections(img_draw, det_list, names)
-        out_path = str(Path(save_dir) / (Path(p).stem + '_pred.jpg'))
-        cv2.imwrite(out_path, cv2.cvtColor(img_draw, cv2.COLOR_RGB2BGR))
-        print(f"saved {out_path} ({len(det_list)} boxes, conf≥{float(args.conf):.2f})")
+        for x1, y1, x2, y2, conf, cls in det_np.tolist():
+            cls_int = int(cls)
+            label = names[cls_int] if 0 <= cls_int < len(names) and names else str(cls_int)
+            counts[label] = counts.get(label, 0) + 1
+            obj_id = f"{label}{counts[label]}"
+            boxes_dict[obj_id] = {
+                'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                'conf': float(conf),
+                'cls': label,
+            }
+            det_list.append((x1, y1, x2, y2, conf, cls_int))
 
+        img_draw = draw_detections(img.copy(), det_list, names)
+
+        if save_outputs:
+            out_path = str(Path(save_dir) / (Path(p).stem + '_pred.jpg'))
+            cv2.imwrite(out_path, cv2.cvtColor(img_draw, cv2.COLOR_RGB2BGR))
+            print(f"saved {out_path} ({len(det_list)} boxes, conf≥{float(args.conf):.2f})")
+
+        results.append({
+            'path': p,
+            'image': img_draw,  # RGB numpy array
+            'boxes': boxes_dict,
+        })
+
+    return results
+
+# Simple video prediction (optional saving, does not return frames to avoid high memory)
+
+def predict_on_video(args, source: str | int, save_dir: str):
+    from .utils import parse_device, make_dir, draw_detections
+    import cv2
+    import numpy as np
+
+    device = parse_device(args.device)
+    model, meta = load_model(args.weights, device, args.num_classes)
+    names = meta.get('names', [])
+    imgsz = meta.get('imgsz', args.imgsz)
+
+    cap = cv2.VideoCapture(source)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video source: {source}")
+
+    save_outputs = bool(save_dir)
+    writer = None
+    out_path = None
+    if save_outputs:
+        make_dir(save_dir)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        out_path = str(Path(save_dir) / (f"{Path(str(source)).stem if isinstance(source, str) else 'webcam'}_pred.mp4"))
+        writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+
+    frame_idx = 0
+    total_boxes = 0
+    with torch.no_grad():
+        while True:
+            ret, frame_bgr = cap.read()
+            if not ret:
+                break
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(frame_rgb, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
+            img_t = torch.from_numpy(np.transpose(resized.astype(np.float32) / 255.0, (2, 0, 1))).unsqueeze(0).to(device)
+            pred = model(img_t)
+            dets = decode_predictions(pred, model.num_classes, float(args.conf), args.iou, imgsz, args.max_det)[0]
+            det_list = []
+            for x1, y1, x2, y2, conf, cls in dets.detach().cpu().numpy().tolist():
+                det_list.append((x1, y1, x2, y2, conf, int(cls)))
+            annotated = draw_detections(resized.copy(), det_list, names)
+            # Resize back to original size for writing/viewing
+            annotated_bgr = cv2.cvtColor(cv2.resize(annotated, (frame_bgr.shape[1], frame_bgr.shape[0])), cv2.COLOR_RGB2BGR)
+            if writer is not None:
+                writer.write(annotated_bgr)
+            frame_idx += 1
+            total_boxes += len(det_list)
+
+    cap.release()
+    if writer is not None:
+        writer.release()
+
+    return {
+        'saved_path': out_path,
+        'frames': frame_idx,
+        'total_boxes': total_boxes,
+    }
 # load weights
 
 def load_model(weights: str, device: torch.device, num_classes: Optional[int] = None):
