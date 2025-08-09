@@ -12,7 +12,7 @@ import torch
 
 
 def build_argparser():
-    p = argparse.ArgumentParser(description='Minimal YOLO-style object detector (anchor-free, stride=16)')
+    p = argparse.ArgumentParser(description='Minimal object detector (anchor-free, stride=16)')
     sub = p.add_subparsers(dest='cmd', required=True)
 
     pt = sub.add_parser('train', help='train model')
