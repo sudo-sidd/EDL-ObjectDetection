@@ -23,6 +23,12 @@ def make_dir(p: str):
 
 
 def parse_device(arg: str) -> torch.device:
-    if arg.lower() == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
+    a = (arg or '').strip().lower()
+    if a == 'auto':
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if a.startswith('cuda'):
+        # allows 'cuda' or 'cuda:0', will raise if invalid index
+        if a == 'cuda' and torch.cuda.is_available():
+            return torch.device('cuda')
+        return torch.device(a)
+    return torch.device('cpu')

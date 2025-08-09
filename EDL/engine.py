@@ -297,10 +297,13 @@ def predict_on_images(args, paths: List[str], save_dir: str):
     results = []  # collect (path, annotated_image, boxes_dict)
 
     for p in paths:
+        t0 = time.time()
+        out_path = ''
         img0 = cv2.imread(p)
         if img0 is None:
             print(f"[warn] skip unreadable {p}")
             continue
+        h0, w0 = img0.shape[:2]
         img_rgb = cv2.cvtColor(img0, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img_rgb, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
         img_t = torch.from_numpy(np.transpose(img.astype(np.float32) / 255.0, (2, 0, 1))).unsqueeze(0).to(device)
@@ -320,31 +323,39 @@ def predict_on_images(args, paths: List[str], save_dir: str):
         # sort by confidence desc for stable numbering
         if det_np.size:
             det_np = det_np[(-det_np[:, 4]).argsort()]
+        # scale back to original resolution
+        scale_x = w0 / float(imgsz)
+        scale_y = h0 / float(imgsz)
         counts: Dict[str, int] = {}
         boxes_dict: Dict[str, Dict[str, object]] = {}
         det_list = []
         for x1, y1, x2, y2, conf, cls in det_np.tolist():
+            x1o = x1 * scale_x; y1o = y1 * scale_y; x2o = x2 * scale_x; y2o = y2 * scale_y
             cls_int = int(cls)
             label = names[cls_int] if 0 <= cls_int < len(names) and names else str(cls_int)
             counts[label] = counts.get(label, 0) + 1
             obj_id = f"{label}{counts[label]}"
             boxes_dict[obj_id] = {
-                'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                'bbox': [float(x1o), float(y1o), float(x2o), float(y2o)],
                 'conf': float(conf),
                 'cls': label,
             }
-            det_list.append((x1, y1, x2, y2, conf, cls_int))
+            det_list.append((x1o, y1o, x2o, y2o, conf, cls_int))
 
-        img_draw = draw_detections(img.copy(), det_list, names)
+        # draw on original resolution
+        img_draw = draw_detections(img_rgb.copy(), det_list, names)
 
         if save_outputs:
             out_path = str(Path(save_dir) / (Path(p).stem + '_pred.jpg'))
             cv2.imwrite(out_path, cv2.cvtColor(img_draw, cv2.COLOR_RGB2BGR))
-            print(f"saved {out_path} ({len(det_list)} boxes, conf≥{float(args.conf):.2f})")
+
+        # concise per-image debug line
+        dt_ms = (time.time() - t0) * 1000.0
+        print(f"{Path(p).name} det={len(det_list)} conf>={float(args.conf):.2f} time={dt_ms:.1f}ms out={out_path if out_path else '-'}")
 
         results.append({
             'path': p,
-            'image': img_draw,  # RGB numpy array
+            'image': img_draw,  # RGB numpy array at original resolution
             'boxes': boxes_dict,
         })
 
@@ -385,21 +396,32 @@ def predict_on_video(args, source: str | int, save_dir: str):
             ret, frame_bgr = cap.read()
             if not ret:
                 break
+            t0 = time.time()
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            h0, w0 = frame_rgb.shape[:2]
             resized = cv2.resize(frame_rgb, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
             img_t = torch.from_numpy(np.transpose(resized.astype(np.float32) / 255.0, (2, 0, 1))).unsqueeze(0).to(device)
             pred = model(img_t)
             dets = decode_predictions(pred, model.num_classes, float(args.conf), args.iou, imgsz, args.max_det)[0]
+            # prepare detections scaled to original resolution
+            det_np = dets.detach().cpu().numpy()
+            if det_np.size:
+                det_np = det_np[(-det_np[:, 4]).argsort()]
+            scale_x = w0 / float(imgsz)
+            scale_y = h0 / float(imgsz)
             det_list = []
-            for x1, y1, x2, y2, conf, cls in dets.detach().cpu().numpy().tolist():
-                det_list.append((x1, y1, x2, y2, conf, int(cls)))
-            annotated = draw_detections(resized.copy(), det_list, names)
-            # Resize back to original size for writing/viewing
-            annotated_bgr = cv2.cvtColor(cv2.resize(annotated, (frame_bgr.shape[1], frame_bgr.shape[0])), cv2.COLOR_RGB2BGR)
+            for x1, y1, x2, y2, conf, cls in det_np.tolist():
+                x1o = x1 * scale_x; y1o = y1 * scale_y; x2o = x2 * scale_x; y2o = y2 * scale_y
+                det_list.append((x1o, y1o, x2o, y2o, float(conf), int(cls)))
+            annotated = draw_detections(frame_rgb.copy(), det_list, names)
+            annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
             if writer is not None:
                 writer.write(annotated_bgr)
             frame_idx += 1
             total_boxes += len(det_list)
+            # concise per-frame debug
+            dt_ms = (time.time() - t0) * 1000.0
+            print(f"frame={frame_idx} det={len(det_list)} conf>={float(args.conf):.2f} time={dt_ms:.1f}ms out={out_path if out_path else '-'}")
 
     cap.release()
     if writer is not None:
@@ -415,10 +437,32 @@ def predict_on_video(args, source: str | int, save_dir: str):
 def load_model(weights: str, device: torch.device, num_classes: Optional[int] = None):
     model, meta = None, {}
     ckpt = torch.load(weights, map_location=device)
-    meta = ckpt.get('meta', {})
+    if not isinstance(ckpt, dict) or 'model' not in ckpt:
+        raise RuntimeError(f"Checkpoint missing 'model' key: {weights}")
+    meta = ckpt.get('meta', {}) or {}
+    names = meta.get('names', [])
     nc_meta = meta.get('num_classes', None)
     imgsz = meta.get('imgsz', 640)
-    nc = num_classes if num_classes is not None else (nc_meta if nc_meta is not None else 1)
+
+    # Prefer explicit num_classes, else use from meta, else None (set later)
+    nc = num_classes if num_classes is not None else (nc_meta if nc_meta is not None else None)
+
+    # Quick safety defaults to avoid downstream shape/index errors
+    if not names:
+        print("[warn] checkpoint missing class names; defaulting to ['class0']")
+        meta['names'] = ["class0"]
+        if num_classes is None:  # only override if user didn't explicitly set it
+            nc = 1
+            meta['num_classes'] = 1
+
+    if nc is None:
+        print("[warn] checkpoint missing num_classes; defaulting to 1")
+        nc = 1
+        meta['num_classes'] = 1
+
+    if isinstance(meta.get('names'), list) and len(meta['names']) != nc:
+        print(f"[warn] num_classes({nc}) != len(names)({len(meta['names'])}); proceeding")
+
     model = MiniYOLO(num_classes=nc).to(device)
     model.load_state_dict(ckpt['model'], strict=False)
     model.eval()
