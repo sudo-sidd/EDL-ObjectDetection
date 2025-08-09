@@ -249,7 +249,15 @@ def predict_on_images(args, paths: List[str], save_dir: str):
         img_t = torch.from_numpy(np.transpose(img.astype(np.float32) / 255.0, (2, 0, 1))).unsqueeze(0).to(device)
         with torch.no_grad():
             pred = model(img_t)
-            dets = decode_predictions(pred, model.num_classes, args.conf, args.iou, imgsz, max_det=args.max_det)[0]
+            dets = decode_predictions(
+                pred,
+                model.num_classes,
+                conf_thres=float(args.conf),
+                iou_thres=args.iou,
+                img_size=imgsz,
+                max_det=args.max_det,
+            )[0]
+
         det_list = []
         for x1, y1, x2, y2, conf, cls in dets.detach().cpu().numpy().tolist():
             det_list.append((x1, y1, x2, y2, conf, int(cls)))
@@ -257,7 +265,7 @@ def predict_on_images(args, paths: List[str], save_dir: str):
         img_draw = draw_detections(img_draw, det_list, names)
         out_path = str(Path(save_dir) / (Path(p).stem + '_pred.jpg'))
         cv2.imwrite(out_path, cv2.cvtColor(img_draw, cv2.COLOR_RGB2BGR))
-        print(f"saved {out_path}")
+        print(f"saved {out_path} ({len(det_list)} boxes, conf≥{float(args.conf):.2f})")
 
 # load weights
 

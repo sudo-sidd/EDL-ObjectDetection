@@ -11,7 +11,6 @@ from pathlib import Path
 # Add current directory to path for EDL imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from EDL.cli import parse_train_args, parse_predict_args
 from EDL.engine import train_loop, predict_on_images, predict_on_video
 
 
@@ -162,15 +161,37 @@ def main():
         print("🚀 Starting EDL Prediction...")
         args.num_classes = None  # Will be loaded from weights
         
+        import os, glob
+        
         # Handle different source types
-        source = args.source.lower()
-        if source == 'webcam':
+        source = args.source
+        source_lower = source.lower()
+        if source_lower == 'webcam':
             predict_on_video(args, 0, args.save_dir)  # 0 for webcam
-        elif source.endswith(('.mp4', '.avi', '.mov', '.mkv')):
-            predict_on_video(args, args.source, args.save_dir)
+        elif source_lower.endswith(('.mp4', '.avi', '.mov', '.mkv')) and os.path.isfile(source):
+            predict_on_video(args, source, args.save_dir)
         else:
-            # Assume it's an image or directory of images
-            predict_on_images(args, [args.source], args.save_dir)
+            # Build list of image paths
+            paths = []
+            if os.path.isdir(source):
+                patterns = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
+                for pat in patterns:
+                    paths.extend(sorted(glob.glob(os.path.join(source, pat))))
+            elif any(ch in source for ch in ['*', '?', '[']):
+                paths = sorted(glob.glob(source))
+            elif os.path.isfile(source):
+                paths = [source]
+            else:
+                print(f"❌ Source not found: {source}")
+                return
+            
+            if not paths:
+                print(f"❌ No images found for source: {source}")
+                return
+            
+            print(f"📸 Found {len(paths)} image(s)")
+            predict_on_images(args, paths, args.save_dir)
+            print(f"✅ Saved predictions to: {args.save_dir}")
             
     elif args.command == 'help':
         show_help()
