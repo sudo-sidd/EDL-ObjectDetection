@@ -9,6 +9,30 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+# Add tqdm with a safe fallback
+try:
+    from tqdm.auto import tqdm
+except Exception:  # minimal fallback if tqdm isn't available
+    class _SimpleTQDM:
+        def __init__(self, iterable=None, total=None, desc=None, leave=True):
+            self.iterable = iterable
+            self.total = total if total is not None else (len(iterable) if iterable is not None else None)
+            self.desc = desc or ''
+            self.count = 0
+        def __iter__(self):
+            for x in self.iterable:
+                self.count += 1
+                if self.total:
+                    print(f"{self.desc} [{self.count}/{self.total}]", end='\r')
+                yield x
+            print()
+        def set_postfix(self, **kwargs):
+            pass
+        def close(self):
+            pass
+    def tqdm(iterable=None, total=None, desc=None, leave=True):
+        return _SimpleTQDM(iterable=iterable, total=total, desc=desc, leave=leave)
+
 from .model import MiniYOLO
 from .data import YOLOTxtDataset, collate_fn
 from .utils import xywhn_to_xyxy_pixels, iou_xywh, nms, draw_detections
@@ -169,6 +193,27 @@ def train_loop(args):
     with open(Path(out_dir) / 'meta.json', 'w') as f:
         json.dump(meta, f, indent=2)
 
+    # Training configuration banner
+    try:
+        gpu_name = torch.cuda.get_device_name(0) if (hasattr(device, 'type') and device.type == 'cuda') and torch.cuda.is_available() else 'CPU'
+    except Exception:
+        gpu_name = 'CPU'
+    n_params = sum(p.numel() for p in model.parameters())
+    print("\n🚀 EDL Training Configuration")
+    print("=" * 60)
+    print(f"Data YAML     : {args.data}")
+    print(f"Images        : {len(ds)} train")
+    print(f"Classes       : {nc} -> {names}")
+    print(f"Image size    : {args.imgsz}")
+    print(f"Batch size    : {args.batch}")
+    print(f"Epochs        : {args.epochs}")
+    print(f"Learning rate : {args.lr}")
+    print(f"Workers       : {args.workers}")
+    print(f"Device        : {device} ({gpu_name})")
+    print(f"Model params  : {n_params:,}")
+    print(f"Output dir    : {out_dir}")
+    print("=" * 60)
+
     model.train()
     global_step = 0
     best_loss = float('inf')
@@ -176,7 +221,8 @@ def train_loop(args):
     for epoch in range(args.epochs):
         epoch_loss = 0.0
         t0 = time.time()
-        for batch in dl:
+        pbar = tqdm(dl, total=len(dl), desc=f"Epoch {epoch+1}/{args.epochs}", leave=True)
+        for batch in pbar:
             imgs = batch['images'].to(device)
             labels = [l.to(device) for l in batch['labels']]
             B, _, H, W = imgs.shape
@@ -200,8 +246,14 @@ def train_loop(args):
             epoch_loss += logs['loss']
             global_step += 1
 
-            if global_step % args.log_interval == 0:
-                print(f"epoch {epoch+1}/{args.epochs} step {global_step} loss {logs['loss']:.4f} obj {logs['obj_loss']:.4f} cls {logs['cls_loss']:.4f} box {logs['box_loss']:.4f}")
+            # Update progress bar postfix with current metrics
+            pbar.set_postfix({
+                'loss': f"{logs['loss']:.4f}",
+                'obj': f"{logs['obj_loss']:.4f}",
+                'cls': f"{logs['cls_loss']:.4f}",
+                'box': f"{logs['box_loss']:.4f}",
+            })
+        pbar.close()
 
         dt = time.time() - t0
         avg_loss = epoch_loss / max(1, len(dl))
