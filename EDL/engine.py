@@ -117,12 +117,12 @@ def decode_predictions(pred: torch.Tensor, num_classes: int, conf_thres: float, 
     xywhn = torch.cat([cx, cy, w, h], dim=1)
     xyxyp = xywhn_to_xyxy_pixels(xywhn.permute(0, 2, 3, 1).reshape(B, S*S, 4), img_size)
 
-    obj_flat = obj.view(B, 1, S*S)
+    obj_flat = obj.view(B, S*S)  # Remove extra dimension
     cls_flat = cls.view(B, num_classes, S*S)
 
     out = []
     for b in range(B):
-        scores = (obj_flat[b] * cls_flat[b]).squeeze(0)
+        scores = (obj_flat[b:b+1].unsqueeze(0) * cls_flat[b]).squeeze(0)  # Fix broadcasting
         scores_max, labels = scores.max(dim=0)
         m = scores_max > conf_thres
         if m.sum() == 0:

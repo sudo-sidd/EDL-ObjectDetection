@@ -14,6 +14,7 @@ class YOLOTxtDataset(Dataset):
     def __init__(self, data_yaml: str, split: str = 'train', img_size: int = 640):
         super().__init__()
         y = load_yaml(data_yaml)
+        yaml_dir = Path(data_yaml).parent  # Get YAML file directory
         base = y.get('path', None)
         names = y.get('names', None)
         self.names = names if isinstance(names, list) else []
@@ -22,8 +23,15 @@ class YOLOTxtDataset(Dataset):
         if key not in y:
             raise ValueError(f"Missing '{key}' in dataset yaml")
         p = y[key]
+        
+        # Handle path resolution
         if base is not None and not os.path.isabs(p):
+            # If 'path' key exists, use it as base
             p = str(Path(base) / p)
+        elif not os.path.isabs(p):
+            # If no 'path' key, resolve relative to YAML file location
+            p = str(yaml_dir / p)
+            
         self.images = list_images(p)
         if len(self.images) == 0:
             raise ValueError(f"No images found for split {split} at {p}")
@@ -32,6 +40,8 @@ class YOLOTxtDataset(Dataset):
             lr = y['labels']
             if base is not None and not os.path.isabs(lr):
                 lr = str(Path(base) / lr)
+            elif not os.path.isabs(lr):
+                lr = str(yaml_dir / lr)
             labels_root = lr
         self.labels_root = labels_root
         self.img_size = int(img_size)
