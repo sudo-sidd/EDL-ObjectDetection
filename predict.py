@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # comment instructions only
-from miniyolo.cli import build_argparser, predict_image, predict_batch, predict_video
+from EDL.cli import build_argparser, predict_image, predict_batch, predict_video
 
 if __name__ == '__main__':
     args = build_argparser().parse_args()

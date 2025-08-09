@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # comment instructions only
-from miniyolo.cli import build_argparser
-from miniyolo.engine import predict_on_images
-from miniyolo.data import YOLOTxtDataset
-from miniyolo.utils import now_str
+from EDL.cli import build_argparser
+from EDL.engine import predict_on_images
+from EDL.data import YOLOTxtDataset
+from EDL.utils import now_str
 
 if __name__ == '__main__':
     args = build_argparser().parse_args()
