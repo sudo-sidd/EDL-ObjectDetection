@@ -47,6 +47,14 @@ Custom-ObjectDetection-Model/
 └── README.md                   # This document
 ```
 
+## Documentation
+
+- docs/API_AND_CLI.md — API and CLI usage, arguments, return types.
+- docs/USER_FUNCTIONS.md — User-facing functions, parameters, outputs.
+- docs/MODEL_ARCHITECTURE.md — Model design and math details.
+- docs/DEVELOPER_GUIDE.md — Package modules, roles, file-by-file guide.
+- docs/TECHNICAL.md — Technical overview and internals.
+
 ## Quickstart
 
 1. Prepare a dataset in YOLO format and a data YAML (see Dataset section).

@@ -13,7 +13,30 @@ class Detector:
     Usage:
         from EDL import Detector
         det = Detector(weights='path/to/best.pt', device='auto', imgsz=640, conf=0.25, iou=0.45)
-        results = det.pred(source='images/', save_results='runs/predict')
+        # Images: returns a list of image results
+        img_results = det.pred(source='images/*.jpg', save_results=None)
+        # Video/Webcam: returns a stats dict
+        video_stats = det.pred(source='video.mp4', save_results='runs/predict')
+
+    Returns:
+        - Image mode (file/dir/glob or list of paths):
+          List[Dict] where each item has keys:
+            - 'path': str
+            - 'image': numpy.ndarray (RGB, HxWx3 at original image resolution)
+            - 'boxes': Dict[str, {
+                'bbox': [x1, y1, x2, y2],  # pixel coords clamped to image bounds
+                'conf': float,
+                'cls': str,                # class name or id as string
+              }]
+        - Video/Webcam mode:
+          Dict with keys:
+            - 'saved_path': Optional[str]  # path to saved mp4 if save_results used, else None
+            - 'frames': int
+            - 'total_boxes': int
+
+    Notes:
+        - Saving is opt-in. save_results=True saves to 'runs/predict'; a string sets a custom directory.
+        - Thresholds (conf/iou) and imgsz can be overridden per-call.
     """
 
     def __init__(
@@ -58,10 +81,13 @@ class Detector:
     ):
         """Run prediction on images, directory, glob, video file, or webcam.
 
-        - source: path to image/dir/glob/video, 'webcam', 0, or list of image paths
-        - save_results: True to save to runs/predict, a string path to save there, or None/False to not save
-        - conf/iou/imgsz/max_det: optional overrides
-        Returns list of image results or video stats dict.
+        Args:
+            source: path to image/dir/glob/video, 'webcam', 0, or list of image paths.
+            save_results: True -> save to 'runs/predict'; str -> save to that directory; None/False -> no save.
+            conf/iou/imgsz/max_det: optional per-call overrides.
+        Returns:
+            - If images: List of dicts with keys 'path', 'image' (RGB np.ndarray at original resolution), and 'boxes' dict.
+            - If video/webcam: Dict with keys 'saved_path', 'frames', 'total_boxes'.
         """
         args = self._build_args(conf=conf, iou=iou, imgsz=imgsz, max_det=max_det)
 
@@ -115,4 +141,5 @@ class Detector:
 
     # alias
     def pred(self, *args, **kwargs):
+        """Alias of predict(); see class docstring for return types."""
         return self.predict(*args, **kwargs)
