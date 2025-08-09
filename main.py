@@ -24,8 +24,8 @@ def create_parser():
 Examples:
   python main.py train --data data.yaml --epochs 100
   python main.py predict --weights runs/train/best.pt --source image.jpg
-  python main.py predict --weights runs/train/best.pt --source video.mp4
-  python main.py predict --weights runs/train/best.pt --source webcam
+  python main.py predict --weights runs/train/best.pt --source video.mp4 --save_results
+  python main.py predict --weights runs/train/best.pt --source webcam --save_results runs/predict/webcam
         """
     )
     
@@ -46,18 +46,18 @@ Examples:
     
     # Prediction command
     predict_parser = subparsers.add_parser('predict', help='Run predictions')
-    predict_parser.add_argument('--weights', type=str, required=True, help='Model weights path')
-    predict_parser.add_argument('--source', type=str, required=True, help='Source (image, video, webcam)')
+    predict_parser.add_argument('--weights', type=str, required=True, help='Model weights path (.pt)')
+    predict_parser.add_argument('--source', type=str, required=True, help="Source: image file, video file, directory, glob, or 'webcam'")
     predict_parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold')
     predict_parser.add_argument('--iou', type=float, default=0.45, help='IoU threshold for NMS')
-    predict_parser.add_argument('--max-det', type=int, default=100, help='Maximum detections')
+    predict_parser.add_argument('--max-det', type=int, default=100, help='Maximum detections per image/frame')
     predict_parser.add_argument('--device', type=str, default='auto', help='Device (cpu, cuda, auto)')
-    predict_parser.add_argument('--imgsz', type=int, default=640, help='Image size')
+    predict_parser.add_argument('--imgsz', type=int, default=640, help='Image size (inference resolution)')
     # Allow --save_results to optionally take a path; if provided without value, default to runs/predict
-    predict_parser.add_argument('--save_results', nargs='?', const='runs/predict', default=None, help='Save outputs to this directory (default runs/predict when flag provided)')
+    predict_parser.add_argument('--save_results', nargs='?', const='runs/predict', default=None, help='Save annotated outputs. Optional path, default runs/predict')
     
     # Help command
-    help_parser = subparsers.add_parser('help', help='Show detailed help')
+    subparsers.add_parser('help', help='Show detailed help')
     
     return parser
 
@@ -97,16 +97,15 @@ PREDICTION:
   
   Required:
     --weights     Path to model weights (.pt file)
-    --source      Source: image file, video file, or 'webcam'
+    --source      Source: image file, video file, directory, glob, or 'webcam'
   
   Optional:
     --conf        Confidence threshold (default: 0.25)
     --iou         IoU threshold for NMS (default: 0.45)
-    --max-det     Maximum detections per image (default: 100)
+    --max-det     Maximum detections per image/frame (default: 100)
     --device      Device to use: cpu, cuda, auto (default: auto)
-    --imgsz       Image size (default: 640)
-    --save-dir    Save directory (default: runs/predict)
-    --save_results Save annotated outputs to disk (default: off)
+    --imgsz       Inference image size (default: 640)
+    --save_results Save annotated outputs to disk. Optional path (default: runs/predict)
 
 EXAMPLES:
   # Train on custom dataset
@@ -209,8 +208,7 @@ def main():
                 print(f"✅ Processed {len(results)} image(s) (not saved)")
             
     elif args.command == 'help':
-        # Keep old help behavior for brevity
-        print("Use -h with commands for options. Example: python main.py predict -h")
+        show_help()
         
     else:
         print(f"❌ Unknown command: {args.command}")
